@@ -1,12 +1,8 @@
-from pathlib import Path
-
-content = '''from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-import math
-import statistics
 
 from scrapers import scrape_zillow, scrape_redfin
 from data import get_hud_rent, get_census_growth
@@ -60,7 +56,6 @@ class SearchResponse(BaseModel):
     filters: Dict[str, Any] = {}
     timing_ms: Dict[str, float] = {}
 
-
 def _dedupe_listings(listings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     unique = []
@@ -75,7 +70,6 @@ def _dedupe_listings(listings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         unique.append(l)
     return unique
 
-
 def _sort_listings(listings: List[Dict[str, Any]], sort_by: str) -> List[Dict[str, Any]]:
     sort_by = (sort_by or "value_score").lower()
     if sort_by == "price":
@@ -85,7 +79,6 @@ def _sort_listings(listings: List[Dict[str, Any]], sort_by: str) -> List[Dict[st
     if sort_by == "growth_score":
         return sorted(listings, key=lambda x: x.get("growth_score", 0), reverse=True)
     return sorted(listings, key=lambda x: x.get("value_score", 0), reverse=True)
-
 
 def _apply_filters(listings: List[Dict[str, Any]], min_rent_yield: float, min_value_score: float) -> List[Dict[str, Any]]:
     out = []
@@ -97,13 +90,13 @@ def _apply_filters(listings: List[Dict[str, Any]], min_rent_yield: float, min_va
         out.append(l)
     return out
 
-
 def _attach_growth_scores(listings: List[Dict[str, Any]], state: str, city: str) -> List[Dict[str, Any]]:
     zips = []
     for l in listings:
         z = str(l.get("zip", "")).strip()
         if z and z not in zips:
             zips.append(z)
+
     growth_scores = {}
     for z in zips[:40]:
         try:
@@ -111,32 +104,20 @@ def _attach_growth_scores(listings: List[Dict[str, Any]], state: str, city: str)
         except Exception:
             growth_scores[z] = 50.0
 
-    city_rents = {}
     try:
         city_rents = get_hud_rent(state, city or "")
     except Exception:
         city_rents = {"rent_1br": 1200, "rent_2br": 1500, "rent_3br": 1800}
 
-    scored = score_listings(listings, city_rents, growth_scores)
-    return scored
-
+    return score_listings(listings, city_rents, growth_scores)
 
 @app.get("/api/health")
 def health():
-    return {
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat() + "Z"
-    }
-
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 @app.get("/api/version")
 def version():
-    return {
-        "name": "DealScan API",
-        "version": "1.0.0",
-        "description": "Real estate investment dashboard backend"
-    }
-
+    return {"name": "DealScan API", "version": "1.0.0", "description": "Real estate investment dashboard backend"}
 
 @app.get("/api/filters")
 def available_filters():
@@ -147,7 +128,6 @@ def available_filters():
     ]
     sort_options = ["value_score", "price", "rent_yield", "growth_score"]
     return {"states": states, "sort_options": sort_options}
-
 
 @app.get("/api/listings")
 def get_listings(
@@ -176,9 +156,7 @@ def get_listings(
     redfin_listings = scrape_redfin(state, min_price, max_price, city=city, radius_miles=radius_miles or None)
     redfin_ms = round((time.time() - redfin_start) * 1000, 2)
 
-    all_listings = (zillow_listings or []) + (redfin_listings or [])
-    all_listings = _dedupe_listings(all_listings)
-
+    all_listings = _dedupe_listings((zillow_listings or []) + (redfin_listings or []))
     scored = _attach_growth_scores(all_listings, state, city)
     scored = _apply_filters(scored, min_rent_yield=min_rent_yield, min_value_score=min_value_score)
     scored = _sort_listings(scored, sort_by)
@@ -209,7 +187,6 @@ def get_listings(
         },
     }
 
-
 @app.get("/api/debug/scrape")
 def debug_scrape(
     state: str = Query(..., min_length=2, max_length=2),
@@ -227,7 +204,6 @@ def debug_scrape(
         "redfin_sample": (redfin_listings or [])[:3],
     }
 
-
 @app.post("/api/listings/score")
 def score_only(payload: SearchFilters):
     data = payload.model_dump()
@@ -240,23 +216,22 @@ def score_only(payload: SearchFilters):
     min_value_score = data.get("min_value_score", 0.0)
     sort_by = data.get("sort_by", "value_score")
 
-    zillow = scrape_zillow(state, min_price, max_price, city=city, radius_miles=radius_miles or None)
-    redfin = scrape_redfin(state, min_price, max_price, city=city, radius_miles=radius_miles or None)
-    all_listings = _dedupe_listings((zillow or []) + (redfin or []))
+    all_listings = _dedupe_listings(
+        (scrape_zillow(state, min_price, max_price, city=city, radius_miles=radius_miles or None) or [])
+        + (scrape_redfin(state, min_price, max_price, city=city, radius_miles=radius_miles or None) or [])
+    )
     scored = _attach_growth_scores(all_listings, state, city)
     scored = _apply_filters(scored, min_rent_yield=min_rent_yield, min_value_score=min_value_score)
     scored = _sort_listings(scored, sort_by)
     return {"count": len(scored), "listings": scored}
 
-
 @app.get("/api/insights/state/{state}")
 def state_insights(state: str, city: str = ""):
     try:
         rent = get_hud_rent(state.upper(), city)
-    except Exception as e:
+    except Exception:
         rent = {"rent_1br": None, "rent_2br": None, "rent_3br": None}
     return {"state": state.upper(), "city": city, "rent": rent}
-
 
 @app.get("/api/insights/zip/{zip_code}")
 def zip_insights(zip_code: str):
@@ -266,11 +241,9 @@ def zip_insights(zip_code: str):
         growth = 50.0
     return {"zip": zip_code, "growth_score": growth}
 
-
 @app.get("/api/ping")
 def ping():
     return {"pong": True}
-
 
 @app.get("/api/meta")
 def meta():
@@ -291,6 +264,3 @@ def meta():
             "/api/meta",
         ]
     }
-'''
-Path('dealscan/backend/main.py').write_text(content)
-print('Regenerated main.py')

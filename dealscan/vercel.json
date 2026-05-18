@@ -1,15 +1,10 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "dealscan/frontend/package.json",
-      "use": "@vercel/next"
-    }
+    { "src": "dealscan/frontend/package.json", "use": "@vercel/next" }
   ],
   "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "dealscan/frontend/$1"
-    }
-  ]
+    { "src": "/(.*)", "dest": "dealscan/frontend/$1" }
+  ],
+  "outputDirectory": "dealscan/frontend/.next"
 }

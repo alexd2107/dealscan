@@ -1,7 +1,6 @@
 import os
 import json
 import requests
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,7 +12,8 @@ HEADERS = {
 }
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
-RAPIDAPI_HOST = "zillow-com-live-data-scraper-api.p.rapidapi.com"
+RAPIDAPI_HOST = "zillow-real-estate-api.p.rapidapi.com"
+BASE_URL = "https://zillow-real-estate-api.p.rapidapi.com"
 
 def _to_int(v):
     try:
@@ -32,53 +32,123 @@ def _pick(item, keys, default=""):
             return item.get(k)
     return default
 
+def _api_headers():
+    return {
+        **HEADERS,
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_HOST,
+    }
+
+def _autocomplete(query: str):
+    url = f"{BASE_URL}/autocomplete/index.php"
+    payload = {"query": query, "user_search_context": "FOR_SALE", "max_results": 6}
+    r = requests.post(url, headers={**_api_headers(), "Content-Type": "application/json"}, json=payload, timeout=30)
+    if r.status_code != 200:
+        return []
+    try:
+        data = r.json()
+    except:
+        return []
+    if isinstance(data, dict):
+        for key in ["results", "data", "suggestions", "locations", "items"]:
+            val = data.get(key)
+            if isinstance(val, list):
+                return val
+        for v in data.values():
+            if isinstance(v, list):
+                return v
+    elif isinstance(data, list):
+        return data
+    return []
+
+def _bbox_from_result(item):
+    candidates = [
+        item.get("north_latitude"), item.get("south_latitude"), item.get("east_longitude"), item.get("west_longitude"),
+        item.get("northLatitude"), item.get("southLatitude"), item.get("eastLongitude"), item.get("westLongitude"),
+        item.get("bounds"), item.get("bbox"), item.get("boundary")
+    ]
+    if all(x is not None for x in candidates[:4]):
+        try:
+            return {
+                "north_latitude": float(candidates[0]),
+                "south_latitude": float(candidates[1]),
+                "east_longitude": float(candidates[2]),
+                "west_longitude": float(candidates[3]),
+            }
+        except:
+            pass
+    for key in ["bounds", "bbox", "boundary"]:
+        b = item.get(key)
+        if isinstance(b, dict):
+            for keys in [
+                ("north_latitude", "south_latitude", "east_longitude", "west_longitude"),
+                ("northLatitude", "southLatitude", "eastLongitude", "westLongitude"),
+            ]:
+                if all(k in b for k in keys):
+                    try:
+                        return {
+                            "north_latitude": float(b[keys[0]]),
+                            "south_latitude": float(b[keys[1]]),
+                            "east_longitude": float(b[keys[2]]),
+                            "west_longitude": float(b[keys[3]]),
+                        }
+                    except:
+                        pass
+    return None
+
+def _extract_rows(data):
+    if isinstance(data, dict):
+        for key in ["results", "data", "listings", "homes", "properties", "items"]:
+            val = data.get(key)
+            if isinstance(val, list):
+                return val
+        for v in data.values():
+            if isinstance(v, list):
+                return v
+    elif isinstance(data, list):
+        return data
+    return []
+
 def scrape_zillow(state: str, min_price: int, max_price: int, city: str = "", radius_miles: int | None = None):
     if not RAPIDAPI_KEY:
         return []
 
-    mlsid = city.strip().replace(" ", "")
-    if not mlsid:
+    query = f"{city}, {state}" if city else state
+    ac = _autocomplete(query)
+    if not ac:
         return []
 
-    url = "https://zillow-com-live-data-scraper-api.p.rapidapi.com/bymlsid"
-    params = {"mlsid": mlsid, "page": 1}
-    headers = {
-        **HEADERS,
-        "x-rapidapi-host": RAPIDAPI_HOST,
-        "x-rapidapi-key": RAPIDAPI_KEY,
+    chosen = ac[0] if isinstance(ac[0], dict) else {}
+    bbox = _bbox_from_result(chosen)
+    if not bbox:
+        for item in ac:
+            if isinstance(item, dict):
+                bbox = _bbox_from_result(item)
+                if bbox:
+                    break
+    if not bbox:
+        return []
+
+    url = f"{BASE_URL}/search-homes-sale/index.php"
+    params = {
+        **bbox,
+        "page": 1,
+        "page_size": 75,
     }
 
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=30)
+        r = requests.post(url, headers={**_api_headers(), "Content-Type": "application/json"}, json=params, timeout=30)
         if r.status_code != 200:
             return []
-
         data = r.json()
-
-        rows = []
-        if isinstance(data, dict):
-            for key in ["results", "data", "listings", "homes", "properties"]:
-                val = data.get(key)
-                if isinstance(val, list):
-                    rows = val
-                    break
-            if not rows:
-                for v in data.values():
-                    if isinstance(v, list):
-                        rows = v
-                        break
-        elif isinstance(data, list):
-            rows = data
-
+        rows = _extract_rows(data)
         listings = []
         for item in rows:
             if not isinstance(item, dict):
                 continue
-
             price = _to_int(_pick(item, ["price", "unformattedPrice", "listPrice", "amount"]))
             if not price or not (min_price <= price <= max_price):
                 continue
-
             address = _pick(item, ["address", "streetAddress", "displayAddress", "formattedAddress"], "N/A")
             beds = item.get("beds", item.get("bedrooms", 0)) or 0
             baths = item.get("baths", item.get("bathrooms", 0)) or 0
@@ -87,7 +157,6 @@ def scrape_zillow(state: str, min_price: int, max_price: int, city: str = "", ra
             detail = _pick(item, ["url", "detailUrl", "hdpUrl"], "")
             if detail and not str(detail).startswith("http"):
                 detail = "https://www.zillow.com" + str(detail)
-
             listings.append({
                 "source": "Zillow",
                 "zpid": str(_pick(item, ["zpid", "id", "propertyId"], "")),
@@ -104,7 +173,6 @@ def scrape_zillow(state: str, min_price: int, max_price: int, city: str = "", ra
                 "city": city.title() if city else state.upper(),
                 "zip": str(_pick(item, ["zip", "zipcode", "addressZipcode"], "")),
             })
-
         return listings
     except Exception:
         return []
@@ -130,7 +198,6 @@ def _redfin_region(query: str, state: str = ""):
         data = json.loads(r.text.lstrip("{}&&"))
     except:
         return None, None
-
     for section in data.get("payload", {}).get("sections", []):
         for row in section.get("rows", []):
             rid = str(row.get("id", "")).strip()
@@ -148,7 +215,6 @@ def _redfin_region(query: str, state: str = ""):
 
 def scrape_redfin(state: str, min_price: int, max_price: int, city: str = "", radius_miles: int | None = None):
     listings = []
-
     query = city if city else state
     region_id, region_type = _redfin_region(query, state if city else "")
     if not region_id:
@@ -169,37 +235,25 @@ def scrape_redfin(state: str, min_price: int, max_price: int, city: str = "", ra
             "num_homes": 100,
             "render": "json",
         }
-
         try:
-            r = requests.get(
-                gis_url,
-                headers={**HEADERS, "Referer": "https://www.redfin.com/"},
-                params=params,
-                timeout=20,
-            )
+            r = requests.get(gis_url, headers={**HEADERS, "Referer": "https://www.redfin.com/"}, params=params, timeout=20)
             if r.status_code != 200:
                 break
-
             homes = _parse_redfin_payload(r.text)
             if not homes:
                 break
-
             before = len(listings)
             for row in homes:
                 if not isinstance(row, dict):
                     continue
-
                 price = _to_int(row.get("price", row.get("priceInfo", {}).get("amount", 0)))
                 if not price or not (min_price <= price <= max_price):
                     continue
-
                 url_path = row.get("url", row.get("urlPath", ""))
                 if url_path and not str(url_path).startswith("http"):
                     url_path = "https://www.redfin.com" + str(url_path)
-
                 agent = row.get("listingAgent", {})
                 agent_name = agent.get("agentName", "") if isinstance(agent, dict) else ""
-
                 listings.append({
                     "source": "Redfin",
                     "zpid": str(row.get("propertyId", row.get("id", row.get("mlsId", "")))),
@@ -216,10 +270,8 @@ def scrape_redfin(state: str, min_price: int, max_price: int, city: str = "", ra
                     "city": city.title() if city else state.upper(),
                     "zip": str(row.get("zip", row.get("postalCode", ""))).split(".")[0],
                 })
-
             if len(listings) == before:
                 break
         except:
             break
-
     return listings

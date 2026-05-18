@@ -1,10 +1,6 @@
 {
   "version": 2,
-  "builds": [
-    { "src": "dealscan/frontend/package.json", "use": "@vercel/next" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "dealscan/frontend/$1" }
-  ],
-  "outputDirectory": "dealscan/frontend/.next"
+  "installCommand": "cd dealscan/frontend && npm install",
+  "buildCommand": "cd dealscan/frontend && npm run build",
+  "devCommand": "cd dealscan/frontend && npm run dev"
 }
